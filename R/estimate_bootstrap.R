@@ -12,6 +12,9 @@
 #'
 #' @param cores A parameter specifying the maximum number of cores to use in the parallelization.
 #'
+#' @param parallel Logical indicating whether to use parallel execution. When FALSE,
+#'   bootstrapping runs serially in a single R session.
+#'
 #' @param seed A parameter to specify the seed for reproducibility of results. Default is NULL.
 #'
 #' @param ... A list of parameters passed on to the estimation method.
@@ -29,7 +32,7 @@
 #'  \item{total_paths_descriptives}{A matrix of the bootstrap model total paths and standard deviations.}
 #'
 #' @usage
-#' bootstrap_model(seminr_model, nboot = 500, cores = NULL, seed = NULL, ...)
+#' bootstrap_model(seminr_model, nboot = 500, cores = NULL, seed = NULL, parallel = TRUE, ...)
 #'
 #' @seealso \code{\link{relationships}} \code{\link{constructs}} \code{\link{paths}} \code{\link{interaction_term}}
 #'
@@ -66,7 +69,7 @@
 #'
 #' summary(boot_seminr_model)
 #' @export
-bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL, ...) {
+bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL, parallel = TRUE, ...) {
   out <- tryCatch(
     {
       # Bootstrapping for significance as per Hair, J. F., Hult, G. T. M., Ringle, C. M., and Sarstedt, M. (2017). A Primer on
@@ -84,8 +87,10 @@ bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL
       missing <- seminr_model$settings$missing
 
 
-      # Initialize the cluster
-      suppressWarnings(ifelse(is.null(cores), cl <- parallel::makeCluster(parallel::detectCores(), setup_strategy = "sequential"), cl <- parallel::makeCluster(cores, setup_strategy = "sequential")))
+      # Initialize the cluster if running in parallel
+      if (isTRUE(parallel)) {
+        suppressWarnings(ifelse(is.null(cores), cl <- parallel::makeCluster(parallel::detectCores(), setup_strategy = "sequential"), cl <- parallel::makeCluster(cores, setup_strategy = "sequential")))
+      }
 
       # Function to generate random samples with replacement
       getRandomIndex <- function(d) {return(sample.int(nrow(d), replace = TRUE))}
@@ -94,18 +99,20 @@ bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL
       if (is.null(seed)) {seed <- sample.int(100000, size = 1)}
 
       # Export variables and functions to cluster
-      parallel::clusterExport(cl=cl, varlist=c("measurement_model",
-                                               "structural_model",
-                                               "inner_weights",
-                                               "getRandomIndex",
-                                               "d",
-                                               "HTMT",
-                                               "seed",
-                                               "total_effects",
-                                               "missing_value",
-                                               "maxIt",
-                                               "stopCriterion",
-                                               "missing"), envir=environment())
+      if (isTRUE(parallel)) {
+        parallel::clusterExport(cl=cl, varlist=c("measurement_model",
+                                                 "structural_model",
+                                                 "inner_weights",
+                                                 "getRandomIndex",
+                                                 "d",
+                                                 "HTMT",
+                                                 "seed",
+                                                 "total_effects",
+                                                 "missing_value",
+                                                 "maxIt",
+                                                 "stopCriterion",
+                                                 "missing"), envir=environment())
+      }
 
       # Calculate the expected nrow of the bootmatrix
       length <- 3*nrow(seminr_model$path_coef)^2 + 2*nrow(seminr_model$outer_loadings)*ncol(seminr_model$outer_loadings)
@@ -142,7 +149,11 @@ bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL
       }
 
       # Bootstrap the estimates
-      utils::capture.output(bootmatrix <- parallel::parSapply(cl, 1:nboot, getEstimateResults, d, length))
+      if (isTRUE(parallel)) {
+        utils::capture.output(bootmatrix <- parallel::parSapply(cl, 1:nboot, getEstimateResults, d, length))
+      } else {
+        utils::capture.output(bootmatrix <- sapply(1:nboot, getEstimateResults, d, length))
+      }
 
       # Clean the NAs and report the NAs
       bootmatrix <- bootmatrix[,!is.na(bootmatrix[1,])]
@@ -337,7 +348,9 @@ bootstrap_model <- function(seminr_model, nboot = 500, cores = NULL, seed = NULL
       seminr_model <- NULL
     },
     finally = {
-      parallel::stopCluster(cl)
+      if (isTRUE(parallel)) {
+        parallel::stopCluster(cl)
+      }
       return(seminr_model)
     }
   )
